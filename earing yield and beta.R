@@ -10,11 +10,12 @@ channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo
 
 # ɸ
 SecuMain <- dbReadTable(channel, "SecuMain")
+
 data.secu <- filter(SecuMain, SecuCategory==1,  SecuMarket == 83 | SecuMarket == 90, InnerCode != 307,
                     !is.na(ListedDate), !grepl("^9.*", SecuCode))
 data.secu <- select(data.secu, InnerCode, CompanyCode, SecuCode, SecuAbbr, SecuMarket, ListedDate)
 data.secu$ListedDate <- as.Date(data.secu$ListedDate)
-data.secu <- arrange(data.secu, InnerCode)
+data.secu <- arrange(data.secu, SecuCode)
 
 
 sql <-  "SELECT T1.DataDate,
@@ -50,20 +51,44 @@ dbDisconnect(channel)
 
 startdate <- ymd("2007-01-01")
 enddate <- ymd("2015-02-28")
-
+index <- filter(index , TradingDay >= startdate & TradingDay <= enddate)
 
 freerate <- read.csv('Yield.csv', header = TRUE, sep = ",")
-index <- filter(index , TradingDay >= startdate & TradingDay <= enddate)
-index$TradingDay <- as.Date(index$TradingDay)
-# 
+freerate$DataDate <- ymd(freerate$DataDate)
+freerate <- select(freerate, DataDate, yield_30y)
+freerate <- filter(freerate, DataDate >= startdate & DataDate <= enddate)
+freerate$yield_30y <- (1+freerate$yield_30y)^(1/252)-1
+
+
 
 data$DataDate <- ymd(as.Date(data$DataDate))
-data <- filter(data, DataDate >= startdate & DataDate <= enddate, SecuCode %in% data.secu$SecuCode)
+data.stocks <- filter(data, DataDate >= startdate & DataDate <= enddate, SecuCode %in% data.secu$SecuCode,
+                      IfTradingDay == 1)
 
-data.industry <- group_by(data, IndustryCode, DataDate)
+data.industry <- group_by(data.stocks, IndustryCode, DataDate)
 return.industry <- summarise(data.industry , return.industry = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit, na.rm = TRUE)) 
-ep.industry <- summarise(data.industry , return.industry = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE))
-data.market <- group_by(data, DataDate)
+return.industry.abnormal <- left_join(return.industry, freerate, by = NULL) 
+return.industry.abnormal$abnormal <- return.industry.abnormal$return.industry-return.industry.abnormal$yield_30y
+
+
+data.market <- group_by(data.stocks, DataDate)
 return.market <- summarise(data.market , return.market = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit,  na.rm = TRUE))
+return.market.abnormal <- left_join(return.market, freerate, by = NULL) 
+return.market.abnormal$abnormal <- return.market.abnormal$return.market-return.market.abnormal$yield_30y
 
+ep.industry <- summarise(data.industry , ep.industry = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE))
 
+# 月度
+tradingdate <- filter(data.stocks, IfMonthEnd == 1)
+tradingdate <- select(tradingdate, DataDate)
+tradingdate <- unique(tradingdate)
+tradingdate <- filter(tradingdate, DataDate > startdate + months(11))
+
+return.industry.abnormal.group <- group_by(return.industry.abnormal, IndustryCode)
+for (i in tradingdate){
+  return.industry.abnormal.group.group <- filter(return.industry.abnormal.group, DataDate<= i & DataDate >= i - years(1))
+  return.market.abnormal.group <- filter(return.market.abnormal, DataDate<= i & DataDate >= i - years(1))
+  return.market.abnormal.group <- select(return.market.abnormal.group, abnormal)
+  beta.industry <- summarise(return.industry.abnormal.group.group, coef(lm(abnormal~return.market.abnormal.group))[2])  
+}
+return.industry
