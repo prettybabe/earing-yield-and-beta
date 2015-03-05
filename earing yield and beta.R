@@ -38,6 +38,9 @@ sql <-  "SELECT T1.DataDate,
          order by T1.SecuCode,T1.DataDate"
 data <- dbGetQuery(channel, sql)
 
+sql <- "  SELECT TradingDay, (ClosePrice/PrevClosePrice - 1) as Returns FROM QT_IndexQuote WHERE InnerCode=1 ORDER BY TradingDay"
+index <- dbGetQuery(channel, sql)
+
  
 dbDisconnect(channel)
 
@@ -50,14 +53,17 @@ enddate <- ymd("2015-02-28")
 
 
 freerate <- read.csv('Yield.csv', header = TRUE, sep = ",")
-
-
+index <- filter(index , TradingDay >= startdate & TradingDay <= enddate)
+index$TradingDay <- as.Date(index$TradingDay)
 # 
 
 data$DataDate <- ymd(as.Date(data$DataDate))
 data <- filter(data, DataDate >= startdate & DataDate <= enddate, SecuCode %in% data.secu$SecuCode)
 
 data.industry <- group_by(data, IndustryCode, DataDate)
-return.industry <- summarise(data.industry , return.industry = sum(DailyReturn* NetProfit)/sum(NetProfit)) 
+return.industry <- summarise(data.industry , return.industry = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit, na.rm = TRUE)) 
+ep.industry <- summarise(data.industry , return.industry = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE))
+data.market <- group_by(data, DataDate)
+return.market <- summarise(data.market , return.market = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit,  na.rm = TRUE))
 
 
