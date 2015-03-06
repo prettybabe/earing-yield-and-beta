@@ -68,13 +68,15 @@ data.stocks <- filter(data, DataDate >= startdate & DataDate <= enddate, SecuCod
 data.industry <- group_by(data.stocks, IndustryCode, DataDate)
 return.industry <- summarise(data.industry , return.industry = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit, na.rm = TRUE)) 
 return.industry.abnormal <- left_join(return.industry, freerate, by = NULL) 
-return.industry.abnormal$abnormal <- return.industry.abnormal$return.industry-return.industry.abnormal$yield_30y
+return.industry.abnormal$abnormal.industry <- return.industry.abnormal$return.industry-return.industry.abnormal$yield_30y
 
 
 data.market <- group_by(data.stocks, DataDate)
 return.market <- summarise(data.market , return.market = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit,  na.rm = TRUE))
 return.market.abnormal <- left_join(return.market, freerate, by = NULL) 
-return.market.abnormal$abnormal <- return.market.abnormal$return.market-return.market.abnormal$yield_30y
+return.market.abnormal$abnormal.market <- return.market.abnormal$return.market-return.market.abnormal$yield_30y
+
+return.data <- left_join(return.industry.abnormal, return.market.abnormal, by = NULL)
 
 ep.industry <- summarise(data.industry , ep.industry = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE))
 
@@ -84,11 +86,24 @@ tradingdate <- select(tradingdate, DataDate)
 tradingdate <- unique(tradingdate)
 tradingdate <- filter(tradingdate, DataDate > startdate + months(11))
 
-return.industry.abnormal.group <- group_by(return.industry.abnormal, IndustryCode)
-for (i in tradingdate){
-  return.industry.abnormal.group.group <- filter(return.industry.abnormal.group, DataDate<= i & DataDate >= i - years(1))
-  return.market.abnormal.group <- filter(return.market.abnormal, DataDate<= i & DataDate >= i - years(1))
-  return.market.abnormal.group <- select(return.market.abnormal.group, abnormal)
-  beta.industry <- summarise(return.industry.abnormal.group.group, coef(lm(abnormal~return.market.abnormal.group))[2])  
+ 
+Beta <- function(x, y){coef(lm(x~y))[[2]]}
+beta.industry <- data.frame(NULL)
+for (i in c(1:nrow(tradingdate))){
+  return.data.filter <- filter(return.data, DataDate<= tradingdate[i, 1] & DataDate >= tradingdate[i, 1] %m-% years(1))
+  return.data.filter$DataDate <- tradingdate[i, 1]
+  return.data.filter.group <- group_by(return.data.filter, IndustryCode, DataDate)
+  beta.industry <-rbind(beta.industry, summarise(return.data.filter.group , beta = Beta(abnormal.industry, abnormal.market)))
 }
-return.industry
+
+
+corr.data <- left_join(beta.industry, ep.industry, by = NULL)
+corr.data <- ungroup(corr.data )
+corr.data <- filter(corr.data, !is.na(IndustryCode))
+corr.data <- group_by(corr.data , DataDate)
+corr.industry <- summarise(corr.data, corr = cor(beta, ep.industry))
+
+
+
+
+
