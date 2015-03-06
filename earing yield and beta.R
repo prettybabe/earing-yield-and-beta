@@ -98,10 +98,28 @@ for (i in c(1:nrow(tradingdate))){
 
 
 corr.data <- left_join(beta.industry, ep.industry, by = NULL)
-corr.data <- ungroup(corr.data )
 corr.data <- filter(corr.data, !is.na(IndustryCode))
 corr.data <- group_by(corr.data , DataDate)
 corr.industry <- summarise(corr.data, corr = cor(beta, ep.industry))
+ 
+
+
+#
+corr.industry.positive <- filter(corr.industry, corr > 0)
+corr.industry.negative <- filter(corr.industry, corr < 0)
+beta.industry <- group_by(beta.industry, DataDate)
+beta.industry <- filter(beta.industry, !is.na(IndustryCode))
+
+
+beta.industry.top3 <-  arrange(beta.industry, desc(beta))
+beta.industry.top3 <-  slice(beta.industry.top3, 1:3)
+corr.industry.positive <- left_join(corr.industry.positive, beta.industry.top3, by = NULL)
+
+
+beta.industry.last3 <-  arrange(beta.industry, beta)
+beta.industry.last3 <-  slice(beta.industry.top3, 1:3)
+corr.industry.negative <- left_join(corr.industry.negative, beta.industry.last3, by = NULL)
+
 
 
 
