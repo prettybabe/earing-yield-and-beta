@@ -39,19 +39,19 @@ sql <-  "SELECT T1.DataDate,
          order by T1.SecuCode,T1.DataDate"
 data <- dbGetQuery(channel, sql)
 
-sql <- "  SELECT TradingDay, (ClosePrice/PrevClosePrice - 1) as Returns FROM QT_IndexQuote WHERE InnerCode=1 ORDER BY TradingDay"
+
+sql <- "SELECT TradingDay, (ClosePrice/PrevClosePrice - 1) as Returns 
+        FROM QT_IndexQuote WHERE InnerCode=1 ORDER BY TradingDay"
 index <- dbGetQuery(channel, sql)
 
  
 dbDisconnect(channel)
 
 
-# 
-
-
 startdate <- ymd("2007-01-01")
 enddate <- ymd("2015-02-28")
 index <- filter(index , TradingDay >= startdate & TradingDay <= enddate)
+
 
 freerate <- read.csv('Yield.csv', header = TRUE, sep = ",")
 freerate$DataDate <- ymd(freerate$DataDate)
@@ -63,45 +63,64 @@ freerate$yield_30y <- (1+freerate$yield_30y)^(1/252)-1
 
 data$DataDate <- ymd(as.Date(data$DataDate))
 data.stocks <- filter(data, DataDate >= startdate & DataDate <= enddate, SecuCode %in% data.secu$SecuCode,
-                      IfTradingDay == 1)
+                      IfTradingDay == 1, !is.na(IndustryCode))
 
-data.industry <- group_by(data.stocks, IndustryCode, DataDate)
-return.industry <- summarise(data.industry , return.industry = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit, na.rm = TRUE)) 
-return.industry.abnormal <- left_join(return.industry, freerate, by = NULL) 
-return.industry.abnormal$abnormal.industry <- return.industry.abnormal$return.industry-return.industry.abnormal$yield_30y
+return.industry <- data.stocks %>%
+  group_by(IndustryCode, DataDate) %>%
+  summarise(return.industry = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit, na.rm = TRUE)) %>%
+  left_join(freerate, by = NULL) %>%
+  mutate(abnormal.industry = return.industry - yield_30y)
 
 
-data.market <- group_by(data.stocks, DataDate)
-return.market <- summarise(data.market , return.market = sum(DailyReturn* NetProfit, na.rm = TRUE)/sum(NetProfit,  na.rm = TRUE))
-return.market.abnormal <- left_join(return.market, freerate, by = NULL) 
-return.market.abnormal$abnormal.market <- return.market.abnormal$return.market-return.market.abnormal$yield_30y
+return.market <- data.stocks %>%
+  group_by(DataDate) %>%
+  summarise(return.market = sum(DailyReturn * NetProfit, na.rm = TRUE)/sum(NetProfit, na.rm = TRUE)) %>%
+  left_join(freerate, by = NULL) %>%
+  mutate(abnormal.market = return.market - yield_30y)
 
-return.data <- left_join(return.industry.abnormal, return.market.abnormal, by = NULL)
 
-ep.industry <- summarise(data.industry , ep.industry = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE))
+return.data <- left_join(return.industry, return.market, by = NULL)
 
-# 月度
-tradingdate <- filter(data.stocks, IfMonthEnd == 1)
-tradingdate <- select(tradingdate, DataDate)
-tradingdate <- unique(tradingdate)
-tradingdate <- filter(tradingdate, DataDate > startdate + months(11))
 
- 
-Beta <- function(x, y){coef(lm(x~y))[[2]]}
-beta.industry <- data.frame(NULL)
+ep.industry <- data.stocks %>%
+  group_by(IndustryCode, DataDate) %>%
+  summarise(ep = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE))
+
+
+
+tradingdate <- data.stocks %>%
+  filter(IfMonthEnd == 1, DataDate > startdate + months(11)) %>%
+  select(DataDate) %>%
+  unique()
+
+
+
+Beta <- function(x, y) coef(lm(x~y))[[2]]
+
 for (i in c(1:nrow(tradingdate))){
-  return.data.filter <- filter(return.data, DataDate<= tradingdate[i, 1] & DataDate >= tradingdate[i, 1] %m-% years(1))
-  return.data.filter$DataDate <- tradingdate[i, 1]
-  return.data.filter.group <- group_by(return.data.filter, IndustryCode, DataDate)
-  beta.industry <-rbind(beta.industry, summarise(return.data.filter.group , beta = Beta(abnormal.industry, abnormal.market)))
+  beta.industry <- return.data %>%
+    filter(DataDate <= tradingdate[i, 1] & DataDate >= tradingdate[i, 1] %m-% years(1)) %>%
+    mutate(DataDate = tradingdate[i, 1]) %>%
+    group_by(IndustryCode, DataDate) %>%
+    summarise(beta = Beta(abnormal.industry, abnormal.market)) 
+    
+   
+  corr.industry <- beta.industry %>%
+    left_join(ep.industry, by = NULL) %>%
+    group_by(DataDate) %>%
+    summarise(corr = cor(beta, ep)) 
+    
+  
+  if (corr.industry$corr > 0){
+    
+    
+  }
+  
+
 }
 
 
-corr.data <- left_join(beta.industry, ep.industry, by = NULL)
-corr.data <- filter(corr.data, !is.na(IndustryCode))
-corr.data <- group_by(corr.data , DataDate)
-corr.industry <- summarise(corr.data, corr = cor(beta, ep.industry))
- 
+
 
 
 #
