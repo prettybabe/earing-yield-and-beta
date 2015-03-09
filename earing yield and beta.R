@@ -5,10 +5,13 @@ options(java.parameters="-Xmx4g")
 library(RSQLServer)
 library(dplyr)
 library(lubridate)
-channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password= 'Aa123123' )
+library(ggplot2)
+library(reshape2)
+channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
 
 
 # ɸ
+setwd("D:\\working\\earing yield and beta")
 SecuMain <- dbReadTable(channel, "SecuMain")
 
 data.secu <- filter(SecuMain, SecuCategory==1,  SecuMarket == 83 | SecuMarket == 90, InnerCode != 307,
@@ -40,7 +43,7 @@ sql <-  "SELECT T1.DataDate,
 data <- dbGetQuery(channel, sql)
 
 
-sql <- "SELECT TradingDay, (ClosePrice/PrevClosePrice - 1) as Returns 
+sql <- "SELECT TradingDay, ClosePrice, PrevClosePrice 
         FROM QT_IndexQuote WHERE InnerCode=1 ORDER BY TradingDay"
 index <- dbGetQuery(channel, sql)
 
@@ -51,6 +54,9 @@ dbDisconnect(channel)
 startdate <- ymd("2007-01-01")
 enddate <- ymd("2015-02-28")
 index <- filter(index , TradingDay >= startdate & TradingDay <= enddate)
+index$TradingDay <- ymd(as.Date(index$TradingDay))
+index <- mutate(index, Returns = ClosePrice/PrevClosePrice-1)
+                        
 
 
 freerate <- read.csv('Yield.csv', header = TRUE, sep = ",")
@@ -89,20 +95,31 @@ ep.industry <- data.stocks %>%
 
 
 tradingdate <- data.stocks %>%
-  filter(IfMonthEnd == 1, DataDate > startdate + months(11)) %>%
+  filter(IfMonthEnd == 1, DataDate >= startdate) %>%
   select(DataDate) %>%
   unique()
 
-
+regression.time <- data.frame(startdate = tradingdate[1:(nrow(tradingdate)-12), 1],
+                              enddate = tradingdate[12:(nrow(tradingdate)-1), 1])
+return.interval <- data.frame(startdate =  tradingdate[12:(nrow(tradingdate)-1), 1],
+                              enddate = tradingdate[13:nrow(tradingdate), 1])
 
 Beta <- function(x, y) coef(lm(x~y))[[2]]
 
-for (i in c(1:nrow(tradingdate))){
+beta.threshold <- 0
+trade.industry.number <- 1
+
+
+return.trading <- data.frame(NULL)
+for (i in c(1:nrow(regression.time))){
   beta.industry <- return.data %>%
-    filter(DataDate <= tradingdate[i, 1] & DataDate >= tradingdate[i, 1] %m-% years(1)) %>%
-    mutate(DataDate = tradingdate[i, 1]) %>%
-    group_by(IndustryCode, DataDate) %>%
-    summarise(beta = Beta(abnormal.industry, abnormal.market)) 
+    filter(DataDate <= regression.time[i, 2] & DataDate >= regression.time[i, 1])  %>%
+    mutate(DataDate = regression.time[i, 2]) %>%
+    mutate(StartDate = regression.time[i, 1]) %>%
+    group_by(IndustryCode, StartDate, DataDate) %>%
+    summarise(beta = Beta(abnormal.industry, abnormal.market)) %>%
+    ungroup() %>%
+    arrange(beta)
     
    
   corr.industry <- beta.industry %>%
@@ -111,35 +128,95 @@ for (i in c(1:nrow(tradingdate))){
     summarise(corr = cor(beta, ep)) 
     
   
-  if (corr.industry$corr > 0){
+  if(corr.industry$corr > beta.threshold){
+    trading.industry <- beta.industry %>%
+      ungroup() %>%
+      arrange(desc(beta)) %>%
+      slice(1:trade.industry.number) %>%
+      select(IndustryCode) 
+  }else{
+    trading.industry <- beta.industry %>%
+      ungroup() %>%
+      arrange(beta) %>%
+      slice(1:trade.industry.number) %>%
+      select(IndustryCode) 
+  }
     
+  
     
+  return.industry.trading <- return.industry %>%
+    filter(DataDate <= return.interval[i, 2] & DataDate > return.interval[i, 1]) 
+  
+  
+  return.market.trading <- index %>%
+    filter(TradingDay <= return.interval[i, 2] & TradingDay  > return.interval[i, 1]) 
+   
+  return.trading.temp <- return.industry.trading %>%
+    filter(IndustryCode %in% trading.industry$IndustryCode) %>%
+    group_by(IndustryCode) %>%
+    summarise(return.industry = exp(sum(log1p(return.industry)))-1) %>%
+    summarise(return.industry = sum(return.industry))  %>%
+    mutate(return.market = exp(sum(log1p(return.market.trading$Returns)))-1)
+  
+  return.trading.temp <- cbind(return.interval[i, ], return.trading.temp)
+  return.trading <- rbind(return.trading, return.trading.temp)
+}
+
+return.trading <- return.trading %>%
+  mutate(return.industry.cumulate = exp(cumsum(log1p(return.industry))) - 1) %>%
+  mutate(return.market.cumulate = exp(cumsum(log1p(return.market)))-1)
+
+return.trading.cumulate <- select(return.trading, enddate, return.industry.cumulate, return.market.cumulate)
+names(return.trading.cumulate) <- c("Date", "industry", "market")
+return.trading.cumulate <- melt(return.trading.cumulate, id=c("Date"))
+names(return.trading.cumulate) <- c("Date", "type", "CumulateReturn")
+qplot(Date, CumulateReturn, data = return.trading.cumulate, colour = type, geom = "line")
+
+
+
+
+
+
+MaxDropdown <- function(date, return.simple, type){
+  maxdropdown.value <- 0
+  maxdropdown.time <- today()
+  return.cumulate <- cumsum(log1p(return.simple))
+  if(maxdropdown.value > return.cumulate[1]){
+    maxdropdown.value <- return.cumulate[1]
+    maxdropdown.time <- date[1]
   }
   
+  for(i in 2:nrow(return.cumulate)){
+    maxdropdown.temp <- return.cumulate[i]- max(return.cumulate[1:i])
+    if(maxdropdown.temp < maxdropdown.value){
+      maxdropdown.value <- maxdropdown.temp
+      maxdropdown.time <- date[i]
+    }
+  }
 
+  maxdropdown.value <- exp(maxdropdown.value) - 1
+  ifelse(type == "value", return(maxdropdown.value), return(maxdropdown.time))
 }
 
 
+AnnualizeReturn <- function(returns, period){
+  return.annualize <- exp(mean(log1p(returns))*period) - 1
+}    
+
+AnnualizeStd <- function(returns, period){
+  return.annualize <- sd(returns)*sqrt(period)
+}    
 
 
-
-#
-corr.industry.positive <- filter(corr.industry, corr > 0)
-corr.industry.negative <- filter(corr.industry, corr < 0)
-beta.industry <- group_by(beta.industry, DataDate)
-beta.industry <- filter(beta.industry, !is.na(IndustryCode))
-
-
-beta.industry.top3 <-  arrange(beta.industry, desc(beta))
-beta.industry.top3 <-  slice(beta.industry.top3, 1:3)
-corr.industry.positive <- left_join(corr.industry.positive, beta.industry.top3, by = NULL)
-
-
-beta.industry.last3 <-  arrange(beta.industry, beta)
-beta.industry.last3 <-  slice(beta.industry.top3, 1:3)
-corr.industry.negative <- left_join(corr.industry.negative, beta.industry.last3, by = NULL)
-
-
+return.trading.annul<- return.trading %>%
+  mutate(year = year(enddate)) %>%
+  select(year, enddate, return.industry) %>%
+  group_by(year) %>%
+  summarise(maxdropdown.time = MaxDropdown(enddate, return.industry, type = "time"),
+            maxdropdown.value =  MaxDropdown(enddate, return.industry, type = "value"),
+            return.annualize = AnnualizeReturn,
+            return.annualize = AnnualizeStd) %>%
+  mutate(IR = return.annualize / return.annualize)
 
 
 
