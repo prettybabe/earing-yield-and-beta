@@ -10,7 +10,7 @@ library(reshape2)
 channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
 
 
-# ɸ
+# 
 setwd("D:\\working\\earing yield and beta")
 SecuMain <- dbReadTable(channel, "SecuMain")
 
@@ -176,7 +176,6 @@ qplot(Date, CumulateReturn, data = return.trading.cumulate, colour = type, geom 
 
 
 
-
 MaxDropdown <- function(date, return.simple, type){
   maxdropdown.value <- 0
   maxdropdown.time <- today()
@@ -186,26 +185,19 @@ MaxDropdown <- function(date, return.simple, type){
     maxdropdown.time <- date[1]
   }
   
-  for(i in 2:nrow(return.cumulate)){
-    maxdropdown.temp <- return.cumulate[i]- max(return.cumulate[1:i])
-    if(maxdropdown.temp < maxdropdown.value){
-      maxdropdown.value <- maxdropdown.temp
-      maxdropdown.time <- date[i]
+  if(length(return.cumulate)>=2)
+    for(i in 2:length(return.cumulate)){
+      maxdropdown.temp <- return.cumulate[i]- max(return.cumulate[1:i])
+      if(maxdropdown.temp < maxdropdown.value){
+        maxdropdown.value <- maxdropdown.temp
+        maxdropdown.time <- date[i]
+      }
     }
-  }
-
+  
   maxdropdown.value <- exp(maxdropdown.value) - 1
   ifelse(type == "value", return(maxdropdown.value), return(maxdropdown.time))
 }
 
-
-AnnualizeReturn <- function(returns, period){
-  return.annualize <- exp(mean(log1p(returns))*period) - 1
-}    
-
-AnnualizeStd <- function(returns, period){
-  return.annualize <- sd(returns)*sqrt(period)
-}    
 
 
 return.trading.annul<- return.trading %>%
@@ -214,9 +206,9 @@ return.trading.annul<- return.trading %>%
   group_by(year) %>%
   summarise(maxdropdown.time = MaxDropdown(enddate, return.industry, type = "time"),
             maxdropdown.value =  MaxDropdown(enddate, return.industry, type = "value"),
-            return.annualize = AnnualizeReturn,
-            return.annualize = AnnualizeStd) %>%
-  mutate(IR = return.annualize / return.annualize)
+            return.annualize = exp(mean(log1p(return.industry))*12) - 1,
+            std.annualize = sd(return.industry)*sqrt(12)) %>%
+  mutate(IR = return.annualize / std.annualize)
 
 
 
