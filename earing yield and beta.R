@@ -1,25 +1,54 @@
-
+setwd("D:\\working\\earing yield and beta")
 options(java.parameters="-Xmx4g")
-
-
 library(RSQLServer)
 library(dplyr)
 library(lubridate)
 library(ggplot2)
 library(reshape2)
+
+channel <- src_sqlserver(server="file", database="XY", user="libo.jin",password="Aa123123")
 channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
 
+startdate <- as.Date("2007-01-01")
+enddate <- as.Date("2015-02-28")
 
-# 
-setwd("D:\\working\\earing yield and beta")
-SecuMain <- dbReadTable(channel, "SecuMain")
 
-data.secu <- filter(SecuMain, SecuCategory==1,  SecuMarket == 83 | SecuMarket == 90, InnerCode != 307,
-                    !is.na(ListedDate), !grepl("^9.*", SecuCode))
-data.secu <- select(data.secu, InnerCode, CompanyCode, SecuCode, SecuAbbr, SecuMarket, ListedDate)
-data.secu$ListedDate <- as.Date(data.secu$ListedDate)
-data.secu <- arrange(data.secu, SecuCode)
+data <- dbReadTable(channel, "SecuMain") %>% 
+  filter(SecuCategory==1,  SecuMarket == 83 | SecuMarket == 90, InnerCode != 307,
+                    !is.na(ListedDate), !grepl("^9.*", SecuCode)) %>%
+  select(InnerCode, CompanyCode, SecuCode, SecuAbbr, SecuMarket, ListedDate) %>%
+  mutate(ListedDate = as.Date(ListedDate)) %>%
+  arrange(SecuCode) %>%
+  left_join(dbReadTable(channel, "QT_DailyQuote"), by = NULL) %>%
+  filter(TradingDay >= startdate & TradingDay <= enddate) %>%
+  mutate(TradingDay = as.Date(TradingDay)) %>%
+  select(-ID, -XGRQ, -JSID) 
 
+netprofit <- dbGetQuery(channel, "SELECT DataDate,SecuCode, NetProfit FROM  TTM_LC_IncomeStatementAll") %>%
+  mutate(DataDate = as.Date(ymd(DataDate))) 
+  
+
+data <- data %>%
+  left_join(netprofit, by = c("SecuCode" = "SecuCode", "TradingDay" = "DataDate"))
+
+shares <- dbGetQuery(channel, "SELECT CompanyCode, EndDate, InfoPublDate, NonRestrictedShares FROM  LC_ShareStru") %>%
+  mutate(EndDate = as.Date(EndDate), InfoPublDate = as.Date(InfoPublDate))
+
+date <- dbReadTable(channel, "QT_TradingDayNew") %>%
+  mutate(TradingDate = as.Date(TradingDate)) %>%
+  select(-ID, -XGRQ, -JSID) %>%
+  filter(TradingDate >= startdate & TradingDate <= enddate, SecuMarket == 83) %>%
+  arrange(TradingDate)
+  
+raw.data <- data %>%
+  left_join(shares, by = ("CompanyCode" = "CompanyCode")) %>%
+  filter(TradingDay >= EndDate & TradingDay >= InfoPublDate) %>%
+  group_by(SecuCode) %>%
+  arrange(desc(EndDate)) %>%
+  slice(1) %>%
+  ungroup()
+  
+  
 
 sql <-  "SELECT T1.DataDate,
          T1.IfTradingDay,
