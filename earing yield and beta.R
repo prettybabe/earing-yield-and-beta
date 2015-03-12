@@ -6,40 +6,50 @@ library(lubridate)
 library(ggplot2)
 library(reshape2)
 
-channel <- src_sqlserver(server="file", database="XY", user="libo.jin",password="Aa123123")
-channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
+
+file_server <- list()
+file_server$channel  <- src_sqlserver(server="file", database="XY", user="libo.jin",password="Aa123123")
+
+#########################################################################################
+#   下载需要的表
+
+file_server$SecuMain <- tbl(file_server$channel, "SecuMain") %>%
+  select(InnerCode, CompanyCode, SecuCode, SecuAbbr, SecuMarket, SecuCategory, ListedDate) %>%
+  collect %>%
+  filter(SecuCategory == 1,  SecuMarket == 83 | SecuMarket == 90, InnerCode != 307,
+                    !is.na(ListedDate), !grepl("^9.*", SecuCode)) %>%
+  mutate(ListedDate = as.Date(ListedDate)) %>%
+  arrange(SecuCode) 
+
+file_server$QT_DailyQuote <- tbl(file_server$channel, "QT_DailyQuote") %>%
+  select(-ID, -XGRQ, -JSID) %>%
+  collect  %>%
+  mutate(TradingDay = as.Date(TradingDay)) 
+  
+
+file_server$NetProfit <- tbl(file_server$channel, "TTM_LC_IncomeStatementAll") %>%
+  select(DataDate, SecuCode, NetProfit) %>%
+  collect %>%
+  mutate(DataDate = as.Date(ymd(DataDate)))
+  
+
+file_server$Shares <- tbl(file_server$channel, "LC_ShareStru") %>%
+  select(CompanyCode, EndDate, InfoPublDate, NonRestrictedShares) %>%
+  collect %>%
+  mutate(EndDate = as.Date(EndDate), InfoPublDate = as.Date(InfoPublDate))
+  
+file_server$TradingDay <- tbl(file_server$channel, "QT_TradingDayNew") %>%
+  select(-ID, -XGRQ, -JSID) %>%
+  collect %>%
+  mutate(TradingDate = as.Date(TradingDate))
+
+
+
+#######################################################################################
 
 startdate <- as.Date("2007-01-01")
 enddate <- as.Date("2015-02-28")
 
-
-data <- dbReadTable(channel, "SecuMain") %>% 
-  filter(SecuCategory==1,  SecuMarket == 83 | SecuMarket == 90, InnerCode != 307,
-                    !is.na(ListedDate), !grepl("^9.*", SecuCode)) %>%
-  select(InnerCode, CompanyCode, SecuCode, SecuAbbr, SecuMarket, ListedDate) %>%
-  mutate(ListedDate = as.Date(ListedDate)) %>%
-  arrange(SecuCode) %>%
-  left_join(dbReadTable(channel, "QT_DailyQuote"), by = NULL) %>%
-  filter(TradingDay >= startdate & TradingDay <= enddate) %>%
-  mutate(TradingDay = as.Date(TradingDay)) %>%
-  select(-ID, -XGRQ, -JSID) 
-
-netprofit <- dbGetQuery(channel, "SELECT DataDate,SecuCode, NetProfit FROM  TTM_LC_IncomeStatementAll") %>%
-  mutate(DataDate = as.Date(ymd(DataDate))) 
-  
-
-data <- data %>%
-  left_join(netprofit, by = c("SecuCode" = "SecuCode", "TradingDay" = "DataDate"))
-
-shares <- dbGetQuery(channel, "SELECT CompanyCode, EndDate, InfoPublDate, NonRestrictedShares FROM  LC_ShareStru") %>%
-  mutate(EndDate = as.Date(EndDate), InfoPublDate = as.Date(InfoPublDate))
-
-date <- dbReadTable(channel, "QT_TradingDayNew") %>%
-  mutate(TradingDate = as.Date(TradingDate)) %>%
-  select(-ID, -XGRQ, -JSID) %>%
-  filter(TradingDate >= startdate & TradingDate <= enddate, SecuMarket == 83) %>%
-  arrange(TradingDate)
-  
 raw.data <- data %>%
   left_join(shares, by = ("CompanyCode" = "CompanyCode")) %>%
   filter(TradingDay >= EndDate & TradingDay >= InfoPublDate) %>%
