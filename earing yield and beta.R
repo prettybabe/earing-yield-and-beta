@@ -6,10 +6,9 @@ library(lubridate)
 library(ggplot2)
 library(reshape2)
 
-
 file_server <- list()
 file_server$channel  <- src_sqlserver(server="file", database="XY", user="libo.jin",password="Aa123123")
-
+channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
 #########################################################################################
 #   下载需要的表
 
@@ -21,9 +20,51 @@ file_server$SecuMain <- tbl(file_server$channel, "SecuMain") %>%
   mutate(ListedDate = as.Date(ListedDate)) %>%
   arrange(SecuCode) 
 
-file_server$QT_DailyQuote <- tbl(file_server$channel, "QT_DailyQuote") %>%
-  select(-ID, -XGRQ, -JSID) %>%
-  collect  %>%
+
+sql <- "Select T1.InnerCode, 
+        T1.CompanyCode,
+        T1.SecuCode, 
+        T1.SecuAbbr,
+        T2.TradingDay,
+        T2.PrevClosePrice, T2.OpenPrice, 
+        T2.HighPrice, 
+        T2.LowPrice, 
+        T2.ClosePrice,
+        T2.TurnoverVolume, 
+        T2.TurnoverValue,
+        T3.NonRestrictedShares,
+        T4.FirstIndustryCode,
+        T4.FirstIndustryName,
+        T4.FirstIndustryCodeNew,
+        T4.FirstIndustryNameNew,
+        T5.NetProfit,
+        T6.IfMonthEnd,
+        T6.IfQuarterEnd,
+        T6.IfTradingDay,
+        T6.IfWeekEnd,
+        T6.IfYearEnd
+        from SecuMain AS T1
+        inner join QT_DailyQuote AS T2
+        ON T1.SecuCategory = 1
+        AND T1.SecuMarket IN (83, 90)
+        AND T1.ListedDate IS NOT NULL
+        AND T1.SecuCode NOT LIKE '9%'
+        AND T1.InnerCode = T2.InnerCode
+        left join LC_ShareStru AS T3
+        ON T1.CompanyCode = T3.CompanyCode
+        AND   T3.EndDate = (SELECT MAX(EndDate) FROM LC_ShareStru WHERE CompanyCode = T1.CompanyCode AND InfoPublDate <= T2.TradingDay
+        AND EndDate <= T2.TradingDay)
+        LEFT JOIN LC_ExgIndustry201510 AS T4
+        ON T1.CompanyCode = T4.CompanyCode
+        AND T4.InfoPublDate = (SELECT MAX(InfoPublDate) FROM LC_ExgIndustry201510 WHERE CompanyCode = T1.CompanyCode AND InfoPublDate <= T2.TradingDay)
+        LEFT JOIN TTM_LC_IncomeStatementAll  AS T5
+        ON T5.SecuCode = T1.SecuCode
+        AND T5.DataDate = T2.TradingDay
+        LEFT JOIN QT_TradingDayNew AS T6
+        ON T2.TradingDay = T6.TradingDate
+        AND T6.SecuMarket = 83
+        ORDER BY T1.InnerCode, T2.TradingDay"
+file_server$QT_DailyQuote <- dbGetQuery(channel, sql) %>%
   mutate(TradingDay = as.Date(TradingDay)) 
   
 
@@ -39,59 +80,30 @@ file_server$Shares <- tbl(file_server$channel, "LC_ShareStru") %>%
   mutate(EndDate = as.Date(EndDate), InfoPublDate = as.Date(InfoPublDate))
   
 file_server$TradingDay <- tbl(file_server$channel, "QT_TradingDayNew") %>%
-  select(-ID, -XGRQ, -JSID) %>%
+  filter(SecuMarket == 83) %>%
+  select(-ID, -SecuMarket, -XGRQ, -JSID) %>%
   collect %>%
-  mutate(TradingDate = as.Date(TradingDate))
+  mutate(TradingDate = as.Date(TradingDate)) 
+  
 
-
-
+dbDisconnect(channel, file_server$channel)
 #######################################################################################
+
+#  选取符合条件的股票
 
 startdate <- as.Date("2007-01-01")
 enddate <- as.Date("2015-02-28")
 
-raw.data <- data %>%
-  left_join(shares, by = ("CompanyCode" = "CompanyCode")) %>%
-  filter(TradingDay >= EndDate & TradingDay >= InfoPublDate) %>%
-  group_by(SecuCode) %>%
-  arrange(desc(EndDate)) %>%
-  slice(1) %>%
-  ungroup()
-  
+raw.data <- file_server$QT_DailyQuote %>%
+  filter(TradingDay >= startdate & TradingDay <= enddate) %>%    
+  left_join(file_server$TradingDay, by = c("TradingDay" = "TradingDate")) %>%
+  left_join(file_server$NetProfit, by = c("SecuCode" = "SecuCode", "TradingDay" = "DataDate"))  
+
+
   
 
-sql <-  "SELECT T1.DataDate,
-         T1.IfTradingDay,
-         T1.IfWeekEnd,
-         T1.IfMonthEnd,
-         T1.IfQuarterEnd,
-         T1.IfYearEnd,
-         T1.IfSpecialTrade,
-         T1.IfSuspended,
-         T1.SecuCode,
-         T1.SecuAbbr,
-         T1.IndustryCode,
-         T1.IndustryName,
-         T1.FloatMarketCap,
-         T1.DailyReturn,T2.NetProfit FROM
-         ReturnDaily T1 
-         left join TTM_LC_IncomeStatementAll T2
-         ON T1.SecuCode = T2.SecuCode
-         AND CONVERT(CHAR(8),T1.DataDate,112) = T2.DataDate
-         order by T1.SecuCode,T1.DataDate"
-data <- dbGetQuery(channel, sql)
 
 
-sql <- "SELECT TradingDay, ClosePrice, PrevClosePrice 
-        FROM QT_IndexQuote WHERE InnerCode=1 ORDER BY TradingDay"
-index <- dbGetQuery(channel, sql)
-
- 
-dbDisconnect(channel)
-
-
-startdate <- ymd("2007-01-01")
-enddate <- ymd("2015-02-28")
 index <- filter(index , TradingDay >= startdate & TradingDay <= enddate)
 index$TradingDay <- ymd(as.Date(index$TradingDay))
 index <- mutate(index, Returns = ClosePrice/PrevClosePrice-1)
