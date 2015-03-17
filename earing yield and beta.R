@@ -97,17 +97,6 @@ freerate <- read.csv('Yield.csv', header = TRUE, sep = ",") %>%
   
 
 returns <- list()
-returns$industry <- data$Stocks %>% 
-  group_by(FirstIndustryCode, TradingDay) %>%
-  summarise(return.industry = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
-  left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
-  mutate(abnormal.industry = return.industry - yield_30y) %>%
-  filter(!is.na(FirstIndustryCode)) %>%
-  select(FirstIndustryCode, TradingDay, abnormal.industry) %>%
-  ungroup()
-
-
- 
 returns$market <- data$Stocks %>% 
   group_by(TradingDay) %>%
   summarise(return.market = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
@@ -121,11 +110,25 @@ returns$index <- data$Index %>%
   summarise(return.index = (ClosePrice/PrevClosePrice -1)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
   mutate(abnormal.index = return.index - yield_30y) %>%
-  select(TradingDay, abnormal.index) %>%
-  ungroup()
+  ungroup() %>%
+  select(TradingDay, abnormal.index) 
+
+
+returns$industry <- data$Stocks %>% 
+  filter(!is.na(FirstIndustryCode)) %>%
+  group_by(FirstIndustryCode, TradingDay) %>%
+  summarise(return.industry = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
+  left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
+  mutate(abnormal.industry = return.industry - yield_30y) %>%
+  filter(!is.na(FirstIndustryCode)) %>%
+  select(FirstIndustryCode, TradingDay, return.industry, abnormal.industry) %>%
+  ungroup() %>%
+  left_join(returns$market, by = c("TradingDay" = "TradingDay")) %>%
+  left_join(returns$index, by = c("TradingDay" = "TradingDay"))
 
 
 ep.industry <- data$Stocks %>% 
+  filter(!is.na(FirstIndustryCode)) %>%
   group_by(FirstIndustryCode, TradingDay) %>%
   summarise(ep = sum(NetProfit, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
   ungroup()
@@ -134,80 +137,88 @@ ep.industry <- data$Stocks %>%
 tradingdate <- data$Stocks %>%
   filter(IfMonthEnd == 1, TradingDay >= startdate) %>%
   select(TradingDay) %>%
-  unique()
+  unique() 
+
 
 regression.time <- data.frame(startdate = tradingdate[1:(nrow(tradingdate)-12), 1],
                               enddate = tradingdate[12:(nrow(tradingdate)-1), 1])
 return.interval <- data.frame(startdate =  tradingdate[12:(nrow(tradingdate)-1), 1],
                               enddate = tradingdate[13:nrow(tradingdate), 1])
 
+
 Beta <- function(x, y) coef(lm(x~y))[[2]]
 
-beta.threshold <- 0
-trade.industry.number <- 1
 
-
-return.trading <- data.frame(NULL)
+beta <- data.frame()
+corr <- data.frame()
 for (i in c(1:nrow(regression.time))){
-  beta.industry <- return.data %>%
-    filter(DataDate <= regression.time[i, 2] & DataDate >= regression.time[i, 1])  %>%
-    mutate(DataDate = regression.time[i, 2]) %>%
-    mutate(StartDate = regression.time[i, 1]) %>%
-    group_by(IndustryCode, StartDate, DataDate) %>%
+  beta.temp <- returns$industry %>%
+    filter(TradingDay <= regression.time[i, 2] & TradingDay >= regression.time[i, 1])  %>%
+    mutate(TradingDate = regression.time[i, 2]) %>%
+    mutate(StartDate =  regression.time[i, 1]) %>%
+    group_by(FirstIndustryCode, StartDate, TradingDate) %>%
     summarise(beta = Beta(abnormal.industry, abnormal.market)) %>%
     ungroup() %>%
     arrange(beta)
     
-   
-  corr.industry <- beta.industry %>%
-    left_join(ep.industry, by = NULL) %>%
-    group_by(DataDate) %>%
-    summarise(corr = cor(beta, ep)) 
-    
+  corr.temp <- beta.temp %>%
+    left_join(ep.industry, by = c("TradingDate" = "TradingDay", "FirstIndustryCode" = "FirstIndustryCode")) %>%
+    group_by(TradingDate) %>%
+    summarise(corr = cor(beta, ep))
   
-  if(corr.industry$corr > beta.threshold){
-    trading.industry <- beta.industry %>%
-      ungroup() %>%
-      arrange(desc(beta)) %>%
-      slice(1:trade.industry.number) %>%
-      select(IndustryCode) 
-  }else{
-    trading.industry <- beta.industry %>%
-      ungroup() %>%
-      arrange(beta) %>%
-      slice(1:trade.industry.number) %>%
-      select(IndustryCode) 
-  }
-    
-  
-    
-  return.industry.trading <- return.industry %>%
-    filter(DataDate <= return.interval[i, 2] & DataDate > return.interval[i, 1]) 
+  returns.industry.monthly.temp <- returns$industry  %>% 
+    filter(TradingDay <= return.interval[i, 2] & TradingDay > return.interval[i, 1])  %>%
+    mutate(StartDate = return.interval[i, 1]) %>%
+    mutate(ReturnDate = return.interval[i, 2]) %>%
+    group_by(FirstIndustryCode, StartDate, ReturnDate) %>%
+    summarise(return.industry.monthly = exp(sum(log1p(return.industry)))-1) %>%
+    ungroup()
   
   
-  return.market.trading <- index %>%
-    filter(TradingDay <= return.interval[i, 2] & TradingDay  > return.interval[i, 1]) 
-   
-  return.trading.temp <- return.industry.trading %>%
-    filter(IndustryCode %in% trading.industry$IndustryCode) %>%
-    group_by(IndustryCode) %>%
-    summarise(return.industry = exp(sum(log1p(return.industry)))-1) %>%
-    summarise(return.industry = sum(return.industry))  %>%
-    mutate(return.market = exp(sum(log1p(return.market.trading$Returns)))-1)
+  beta <- rbind(beta, beta.temp)
+  corr <- rbind(corr, corr.temp)
+  returns$industry.monthly <-  rbind(returns$industry.monthly, returns.industry.monthly.temp)
   
-  return.trading.temp <- cbind(return.interval[i, ], return.trading.temp)
-  return.trading <- rbind(return.trading, return.trading.temp)
+}
+  
+
+
+threshold <- 0
+trade.industry.number <- 1
+half.life <- 0.5
+ts.score <- 6
+
+
+for(i in c(1:nrow(corr))){
+  if(i == 1) corr$smooth[1] <- corr$corr[1]
+  else corr$smooth[i] <- corr$corr[i] + half.life * corr$smooth[i-1]
+  
+  if(i < ts.score)  corr$score[i] <- 0
+  else corr$score[i] <- (corr$smooth[i] - mean(corr$smooth[(i-ts.score +1) : i]))/ sd(corr$smooth[(i-ts.score +1) : i])
 }
 
-return.trading <- return.trading %>%
-  mutate(return.industry.cumulate = exp(cumsum(log1p(return.industry))) - 1) %>%
-  mutate(return.market.cumulate = exp(cumsum(log1p(return.market)))-1)
+corr <- corr %>%
+  slice(-c(1:(ts.score-1)))
 
-return.trading.cumulate <- select(return.trading, enddate, return.industry.cumulate, return.market.cumulate)
-names(return.trading.cumulate) <- c("Date", "industry", "market")
-return.trading.cumulate <- melt(return.trading.cumulate, id=c("Date"))
-names(return.trading.cumulate) <- c("Date", "type", "CumulateReturn")
-qplot(Date, CumulateReturn, data = return.trading.cumulate, colour = type, geom = "line")
+
+data.final <- corr %>%
+  left_join(beta, by = c("TradingDate" = "TradingDate")) %>%
+  left_join(returns$industry.monthly, by = c("FirstIndustryCode" = "FirstIndustryCode",
+                                             "TradingDate" = "StartDate")) %>%
+  mutate(corr.threshold = threshold)  %>%
+  mutate(siginal = ifelse(score >= corr.threshold, 1, ifelse(score <= -corr.threshold, -1, 0))) %>%
+  group_by(TradingDate) %>%
+  mutate(order = ifelse(row_number(beta*siginal) %in% c(1:7), 1,
+                        ifelse(row_number(beta*siginal) %in% c(8:14), 2,
+                               ifelse(row_number(beta*siginal) %in% c(15:21), 3, 4)))) %>%
+  group_by(TradingDate, ReturnDate, order) %>%
+  summarise(average.return = mean(return.industry.monthly)) %>%
+  group_by(order) %>%
+  arrange(TradingDate) %>%
+  mutate(return.industry.cumulate = exp(cumsum(log1p(average.return))) - 1) %>% 
+  ungroup()
+
+qplot(ReturnDate, return.industry.cumulate, data = data.final, shape = order, geom = "line")
 
 
 
