@@ -6,9 +6,6 @@ library(lubridate)
 library(ggplot2)
 library(reshape2)
 
-
-
-
 channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
 
 
@@ -111,20 +108,21 @@ returns$index <- data$Index %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
   mutate(abnormal.index = return.index - yield_30y) %>%
   ungroup() %>%
-  select(TradingDay, abnormal.index) 
+  select(InnerCode, TradingDay, abnormal.index) 
 
 
 returns$industry <- data$Stocks %>% 
   filter(!is.na(FirstIndustryCode)) %>%
   group_by(FirstIndustryCode, TradingDay) %>%
-  summarise(return.industry = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
+  summarise(return.industry = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE),
+            industry.float.marketcap = sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
   mutate(abnormal.industry = return.industry - yield_30y) %>%
-  filter(!is.na(FirstIndustryCode)) %>%
-  select(FirstIndustryCode, TradingDay, return.industry, abnormal.industry) %>%
+  select(FirstIndustryCode, TradingDay, industry.float.marketcap, return.industry, abnormal.industry) %>%
   ungroup() %>%
   left_join(returns$market, by = c("TradingDay" = "TradingDay")) %>%
-  left_join(returns$index, by = c("TradingDay" = "TradingDay"))
+  left_join(returns$index, by = c("TradingDay" = "TradingDay")) %>%
+  filter(InnerCode == 1 )
 
 
 ep.industry <- data$Stocks %>% 
@@ -171,9 +169,12 @@ for (i in c(1:nrow(regression.time))){
     mutate(StartDate = return.interval[i, 1]) %>%
     mutate(ReturnDate = return.interval[i, 2]) %>%
     group_by(FirstIndustryCode, StartDate, ReturnDate) %>%
-    summarise(return.industry.monthly = exp(sum(log1p(return.industry)))-1) %>%
-    ungroup()
-  
+    summarise(return.industry.monthly = exp(sum(log1p(return.industry)))-1,
+              float.marketcap = last(industry.float.marketcap)) %>%
+    ungroup() 
+#     left_join(returns$industry, by = c("FirstIndustryCode" = "FirstIndustryCode", "StartDate" = "TradingDay")) %>%
+#     select(FirstIndustryCode, StartDate, ReturnDate, industry.float.marketcap)
+#   
   
   beta <- rbind(beta, beta.temp)
   corr <- rbind(corr, corr.temp)
@@ -183,7 +184,7 @@ for (i in c(1:nrow(regression.time))){
   
 
 
-threshold <- 0
+threshold <- 0.5
 trade.industry.number <- 1
 half.life <- 0.5
 ts.score <- 6
@@ -211,14 +212,16 @@ data.final <- corr %>%
   mutate(order = ifelse(row_number(beta*siginal) %in% c(1:7), 1,
                         ifelse(row_number(beta*siginal) %in% c(8:14), 2,
                                ifelse(row_number(beta*siginal) %in% c(15:21), 3, 4)))) %>%
+  mutate(order = as.factor(order)) %>%
   group_by(TradingDate, ReturnDate, order) %>%
-  summarise(average.return = mean(return.industry.monthly)) %>%
+  summarise(average.return = sum(return.industry.monthly*float.marketcap)/sum(float.marketcap)) %>%
   group_by(order) %>%
   arrange(TradingDate) %>%
   mutate(return.industry.cumulate = exp(cumsum(log1p(average.return))) - 1) %>% 
   ungroup()
 
-qplot(ReturnDate, return.industry.cumulate, data = data.final, shape = order, geom = "line")
+
+qplot(ReturnDate, return.industry.cumulate, data = data.final, colour = order, geom = "line")
 
 
 
