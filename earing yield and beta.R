@@ -6,142 +6,125 @@ library(lubridate)
 library(ggplot2)
 library(reshape2)
 
-channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
+
+startdate <- as.Date("2007-01-01")
+enddate <- as.Date("2015-02-28")
 
 
 data <- list()
-startdate <- ymd("2007-01-01")
-enddate <- ymd("2015-02-28")
-
-sql <- "Select T1.InnerCode, 
-        T1.CompanyCode,
-        T1.SecuCode, 
-        T1.SecuAbbr,
-        T2.TradingDay,
-        T2.PrevClosePrice, T2.OpenPrice, 
-        T2.HighPrice, 
-        T2.LowPrice, 
-        T2.ClosePrice,
-        T2.TurnoverVolume, 
-        T2.TurnoverValue,
-        T3.NonRestrictedShares,
-        CASE WHEN T2.TradingDay<'20140101' THEN T4.FirstIndustryCodeNew
-        WHEN T2.TradingDay>='20140101' THEN T7.FirstIndustryCode END FirstIndustryCode, 
-        CASE WHEN T2.TradingDay<'20140101' THEN T4.FirstIndustryNameNew
-        WHEN T2.TradingDay>='20140101' THEN T7.FirstIndustryName END FirstIndustryName, 
-        T5.NetProfit,
-        T6.IfMonthEnd,
-        T6.IfQuarterEnd,
-        T6.IfTradingDay,
-        T6.IfWeekEnd,
-        T6.IfYearEnd
-        from SecuMain AS T1
-        inner join QT_DailyQuote AS T2
-        ON T1.SecuCategory = 1
-        AND T1.SecuMarket IN (83, 90)
-        AND T1.ListedDate IS NOT NULL
-        AND T1.SecuCode NOT LIKE '9%'
-        AND T1.InnerCode = T2.InnerCode
-        left join LC_ShareStru AS T3
-        ON T1.CompanyCode = T3.CompanyCode
-        AND   T3.EndDate = (SELECT MAX(EndDate) FROM LC_ShareStru WHERE CompanyCode = T1.CompanyCode AND InfoPublDate <= T2.TradingDay
-        AND EndDate <= T2.TradingDay)
-        LEFT JOIN LC_ExgIndustry201510 AS T4
-        ON T1.CompanyCode = T4.CompanyCode
-        AND T4.InfoPublDate = (SELECT MAX(InfoPublDate) FROM LC_ExgIndustry201510 
-                                WHERE CompanyCode = T1.CompanyCode AND InfoPublDate <= T2.TradingDay)
-        LEFT JOIN TTM_LC_IncomeStatementAll  AS T5
-        ON T5.SecuCode = T1.SecuCode
-        AND T5.DataDate = T2.TradingDay
-        LEFT JOIN QT_TradingDayNew AS T6
-        ON T2.TradingDay = T6.TradingDate
-        AND T6.SecuMarket = 83
-        LEFT JOIN LC_ExgIndustry AS T7
-        ON T1.CompanyCode = T7.CompanyCode
-        AND T7.Standard = 24
-        ORDER BY T1.InnerCode, T2.TradingDay"
-data$Stocks <- dbGetQuery(channel, sql) %>%
-  mutate(TradingDay = ymd(as.Date(TradingDay))) %>%
-  filter(TradingDay >= startdate & TradingDay <= enddate)  
+data$channel <- dbConnect(SQLServer(), server = 'FILE', database = 'XY', user = 'libo.jin', password = 'Aa123123' )
 
 
-sql <- "SELECT InnerCode, 
-        TradingDay,
-        PrevClosePrice,
-        OpenPrice,
-        HighPrice,
-        LowPrice,
-        ClosePrice,
-        TurnoverVolume,
-        TurnoverValue  
-        FROM QT_IndexQuote 
-        WHERE InnerCode in (1, 3145)
-        ORDER BY InnerCode, TradingDay"
-data$Index <-  dbGetQuery(channel, sql) %>%
-  mutate(TradingDay = ymd(as.Date(TradingDay)))  %>%
-  filter(TradingDay >= startdate & TradingDay <= enddate)  
+sql <- "SELECT * FROM SecuMain WHERE SecuCategory = 1 AND SecuMarket IN (83,90) AND ListedDate IS NOT NULL 
+        AND SecuCode NOT LIKE '9%'"
+data$SecuMain <- dbGetQuery(data$channel, sql) %>%
+  select(InnerCode, CompanyCode, SecuCode, SecuAbbr, ListedDate) %>%
+  mutate(ListedDate = as.Date(ListedDate))
+
+sql <- paste("SELECT * FROM QT_IndexQuote WHERE InnerCode = 1 AND TradingDay >='",
+             startdate,"' AND TradingDay <='", enddate,"'ORDER BY InnerCode, TradingDay", sep = "")
+data$Index <-  dbGetQuery(data$channel, sql) %>%
+  mutate(TradingDay = as.Date(TradingDay)) %>%
+  select(InnerCode, TradingDay, PrevClosePrice, ClosePrice)
+
+
+sql <- paste("SELECT * FROM ReturnDaily WHERE TradingDay >='", startdate,"' AND TradingDay <='", enddate,"'", sep = "")
+data$Stocks <- dbGetQuery(data$channel, sql) %>%
+  mutate(DataDate = as.Date(DataDate), TradingDay = as.Date(TradingDay)) 
+
+
+sql <- paste("SELECT SecuCode,DataDate,NetProfit FROM TTM_LC_IncomeStatementAll WHERE DataDate >='",
+             startdate,"' AND DataDate <='", enddate,"'", sep = "")
+data$NetProfit <- dbGetQuery(data$channel, sql) %>%
+  mutate(DataDate = as.Date(ymd(DataDate))) 
+
+sql <- paste("SELECT T1.STOCK_CODE, T1.CON_DATE, T1.RPT_DATE, T1.C5 AS PE FROM  CON_FORECAST AS T1
+        INNER JOIN  QT_TradingDayNew AS T2 ON T1.CON_DATE = T2.TradingDate AND T2.IfMonthEnd = 1
+        AND T2.SecuMarket = 83 AND T2.TradingDate >= '", startdate, "' AND T2.TradingDate <= '",
+        enddate, "' AND T1.STOCK_TYPE = 1 AND T1.CON_TYPE != 0 ORDER BY T1.STOCK_CODE, T1.CON_DATE", sep = "")
+data$PE <-  dbGetQuery(data$channel, sql) %>%
+  group_by(CON_DATE, STOCK_CODE) %>%
+  arrange(RPT_DATE) %>%
+  slice(1) %>%
+  ungroup() %>%
+  mutate(CON_DATE = as.Date(CON_DATE), ep = 1/PE)  
 
 dbDisconnect(channel)
 #######################################################################################
 
-#  选取符合条件的股票
-
 freerate <- read.csv('Yield.csv', header = TRUE, sep = ",") %>%
-  mutate(TradingDay = ymd(TradingDay)) %>%
+  mutate(TradingDay = as.Date(ymd(TradingDay))) %>%
   filter(TradingDay >= startdate & TradingDay <= enddate) %>%
   mutate(yield_30y = (1+ Yield)^(1/252)-1)
            
-  
 
 returns <- list()
-returns$market <- data$Stocks %>% 
+returns$Market <- data$Stocks %>%
+  filter(!is.na(DailyReturn) & DailyReturn != 0 )  %>%
   group_by(TradingDay) %>%
-  summarise(return.market = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
+  summarise(MarketReturn = sum(DailyReturn * FloatMarketCap, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
-  mutate(abnormal.market = return.market - yield_30y) %>%
-  select(TradingDay, abnormal.market) %>%
+  mutate(AbnormalMarketReturn = MarketReturn - yield_30y) %>%
+  select(TradingDay, MarketReturn, AbnormalMarketReturn) %>%
   ungroup()
 
-returns$index <- data$Index %>%
-  group_by(InnerCode, TradingDay) %>%
-  summarise(return.index = (ClosePrice/PrevClosePrice -1)) %>%
+ 
+returns$MarketIndex <- data$Index %>%
+  group_by(TradingDay) %>%
+  summarise(MarketIndexReturn = (ClosePrice/PrevClosePrice -1)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
-  mutate(abnormal.index = return.index - yield_30y) %>%
-  ungroup() %>%
-  select(InnerCode, TradingDay, abnormal.index) 
+  mutate(AbnormalMarketIndexReturn = MarketIndexReturn - yield_30y) %>%
+  select(TradingDay, MarketIndexReturn, AbnormalMarketIndexReturn) %>%
+  ungroup() 
 
 
-returns$industry <- data$Stocks %>% 
-  filter(!is.na(FirstIndustryCode)) %>%
-  group_by(FirstIndustryCode, TradingDay) %>%
-  summarise(return.industry = sum((ClosePrice/PrevClosePrice - 1) * ClosePrice * NonRestrictedShares, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE),
-            industry.float.marketcap = sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
+returns$Industry <- data$Stocks %>% 
+  group_by(IndustryCodeNew, TradingDay) %>%
+  filter(!is.na(DailyReturn) & DailyReturn != 0, !is.na(IndustryCodeNew))  %>%
+  summarise(IndustryReturn = sum(DailyReturn * FloatMarketCap, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE),
+            IndustryFloatMarketcap = sum(FloatMarketCap, na.rm = TRUE)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
-  mutate(abnormal.industry = return.industry - yield_30y) %>%
-  select(FirstIndustryCode, TradingDay, industry.float.marketcap, return.industry, abnormal.industry) %>%
-  ungroup() %>%
-  left_join(returns$market, by = c("TradingDay" = "TradingDay")) %>%
-  left_join(returns$index, by = c("TradingDay" = "TradingDay")) %>%
-  filter(InnerCode == 1 )
+  mutate(AbnormaiIndustryReturn = IndustryReturn - yield_30y) %>%
+  select(IndustryCodeNew, TradingDay, IndustryReturn, IndustryFloatMarketcap, AbnormaiIndustryReturn) %>%
+  ungroup() 
 
-
-ep.industry <- data$Stocks %>% 
-  filter(!is.na(FirstIndustryCode)) %>%
-  group_by(FirstIndustryCode, TradingDay) %>%
-  summarise(ep = sum(NetProfit, na.rm = TRUE)/sum(ClosePrice * NonRestrictedShares, na.rm = TRUE)) %>%
+ep.industry <- list()
+ep.industry$History <- data$Stocks %>% 
+  filter(IfMonthEnd == 1, !is.na(IndustryCodeNew)) %>%
+  select(SecuCode, TradingDay, FloatMarketCap, IndustryCodeNew) %>%
+  left_join(data$NetProfit, by = c("SecuCode" = "SecuCode", "TradingDay" = "DataDate")) %>%
+  group_by(IndustryCodeNew, TradingDay) %>%
+  summarise(ep = sum(NetProfit, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE)) %>%
   ungroup()
 
+ep.industry$Forecast <- data$PE %>%
+  left_join(data$Stocks, by = c("STOCK_CODE" = "SecuCode", "CON_DATE" = "TradingDay")) %>%
+  group_by(IndustryCodeNew, CON_DATE) %>%
+  summarise(ep = sum(ep * FloatMarketCap/sum(FloatMarketCap, na.rm = TRUE), na.rm = TRUE)) %>%
+  filter(!is.na(IndustryCodeNew)) %>%
+  ungroup()
+
+
+
+returns.monthly <- list()
+returns.monthly$Market <- returns$Market %>%
+  mutate(Year = year(TradingDay))
 
 tradingdate <- data$Stocks %>%
-  filter(IfMonthEnd == 1, TradingDay >= startdate) %>%
+  filter(IfMonthEnd == 1, TradingDay >= startdate,  TradingDay <= enddate) %>%
   select(TradingDay) %>%
-  unique() 
+  unique() %>%
+  arrange(TradingDay)
+
+
 
 
 regression.time <- data.frame(startdate = tradingdate[1:(nrow(tradingdate)-12), 1],
                               enddate = tradingdate[12:(nrow(tradingdate)-1), 1])
 return.interval <- data.frame(startdate =  tradingdate[12:(nrow(tradingdate)-1), 1],
                               enddate = tradingdate[13:nrow(tradingdate), 1])
+
+
 
 
 Beta <- function(x, y) coef(lm(x~y))[[2]]
@@ -171,15 +154,11 @@ for (i in c(1:nrow(regression.time))){
     group_by(FirstIndustryCode, StartDate, ReturnDate) %>%
     summarise(return.industry.monthly = exp(sum(log1p(return.industry)))-1,
               float.marketcap = last(industry.float.marketcap)) %>%
-    ungroup() 
-#     left_join(returns$industry, by = c("FirstIndustryCode" = "FirstIndustryCode", "StartDate" = "TradingDay")) %>%
-#     select(FirstIndustryCode, StartDate, ReturnDate, industry.float.marketcap)
-#   
+    ungroup()  
   
   beta <- rbind(beta, beta.temp)
   corr <- rbind(corr, corr.temp)
-  returns$industry.monthly <-  rbind(returns$industry.monthly, returns.industry.monthly.temp)
-  
+  returns$industry.monthly <- rbind(returns$industry.monthly, returns.industry.monthly.temp)  
 }
   
 
@@ -223,6 +202,13 @@ data.final <- corr %>%
 
 qplot(ReturnDate, return.industry.cumulate, data = data.final, colour = order, geom = "line")
 
+aa <- corr %>%
+  left_join(beta, by = c("TradingDate" = "TradingDate")) %>%
+  left_join(returns$industry.monthly, by = c("FirstIndustryCode" = "FirstIndustryCode",
+                                             "TradingDate" = "StartDate")) %>%
+  group_by(score, ReturnDate) %>%
+  summarise(returns = sum(return.industry.monthly*float.marketcap)/sum(float.marketcap))
+  summary(lm(aa$returns~aa$score))
 
 
 
