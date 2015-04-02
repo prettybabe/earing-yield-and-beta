@@ -27,16 +27,15 @@ data$Index <-  dbGetQuery(data$channel, sql) %>%
   mutate(TradingDay = as.Date(TradingDay)) %>%
   select(InnerCode, TradingDay, PrevClosePrice, ClosePrice)
 
-
 sql <- paste("SELECT * FROM ReturnDaily WHERE TradingDay >='", startdate,"' AND TradingDay <='", enddate,"'", sep = "")
 data$Stocks <- dbGetQuery(data$channel, sql) %>%
   mutate(DataDate = as.Date(DataDate), TradingDay = as.Date(TradingDay)) 
-
 
 sql <- paste("SELECT SecuCode,DataDate,NetProfit FROM TTM_LC_IncomeStatementAll WHERE DataDate >='",
              startdate,"' AND DataDate <='", enddate,"'", sep = "")
 data$NetProfit <- dbGetQuery(data$channel, sql) %>%
   mutate(DataDate = as.Date(ymd(DataDate))) 
+
 
 sql <- paste("SELECT T1.STOCK_CODE, T1.CON_DATE, T1.RPT_DATE, T1.C5 AS PE FROM  CON_FORECAST AS T1
         INNER JOIN  QT_TradingDayNew AS T2 ON T1.CON_DATE = T2.TradingDate AND T2.IfMonthEnd = 1
@@ -60,33 +59,31 @@ freerate <- read.csv('Yield.csv', header = TRUE, sep = ",") %>%
 
 returns <- list()
 returns$Market <- data$Stocks %>%
-  filter(!is.na(DailyReturn) & DailyReturn != 0 )  %>%
   group_by(TradingDay) %>%
   summarise(MarketReturn = sum(DailyReturn * FloatMarketCap, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
   mutate(AbnormalMarketReturn = MarketReturn - yield_30y) %>%
   select(TradingDay, MarketReturn, AbnormalMarketReturn) %>%
   ungroup()
-
  
 returns$MarketIndex <- data$Index %>%
   group_by(TradingDay) %>%
-  summarise(MarketIndexReturn = (ClosePrice/PrevClosePrice -1)) %>%
+  summarise(MarketIndexReturn = (ClosePrice/PrevClosePrice - 1)) %>%
   left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
   mutate(AbnormalMarketIndexReturn = MarketIndexReturn - yield_30y) %>%
   select(TradingDay, MarketIndexReturn, AbnormalMarketIndexReturn) %>%
   ungroup() 
 
 
-returns$Industry <- data$Stocks %>% 
-  group_by(IndustryCodeNew, TradingDay) %>%
-  filter(!is.na(DailyReturn) & DailyReturn != 0, !is.na(IndustryCodeNew))  %>%
-  summarise(IndustryReturn = sum(DailyReturn * FloatMarketCap, na.rm = TRUE)/sum(FloatMarketCap, na.rm = TRUE),
-            IndustryFloatMarketcap = sum(FloatMarketCap, na.rm = TRUE)) %>%
-  left_join(freerate, by = c("TradingDay" = "TradingDay")) %>%
-  mutate(AbnormalIndustryReturn = IndustryReturn - yield_30y) %>%
-  select(IndustryCodeNew, TradingDay, IndustryReturn, IndustryFloatMarketcap, AbnormaiIndustryReturn) %>%
-  ungroup() 
+ 
+
+
+aa <-  returns$Industry %>%
+  group_by(IndustryCodeNew) %>%
+  mutate(cum = exp(cumsum(log1p(IndustryReturn))) - 1) 
+  write.csv(aa,"aa.csv")
+p <- ggplot(aa, aes(TradingDay, cum))+ geom_line(aes(color = as.factor(IndustryCodeNew)))
+p
 
 ep.industry <- list()
 ep.industry$History <- data$Stocks %>% 
@@ -137,8 +134,10 @@ returns.monthly$Industry <- returns$Industry %>%
 
 regression.time.monthly <- data.frame(startdate = tradingdate[1:(nrow(tradingdate) - 24), 1],
                               enddate = tradingdate[24:(nrow(tradingdate)-1), 1])
+
 return.interval.monthly <- data.frame(startdate =  tradingdate[24:(nrow(tradingdate)-1), 1],
                               enddate = tradingdate[25:nrow(tradingdate), 1])
+
 
 
 beta.monthly <- data.frame()
