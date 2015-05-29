@@ -1,4 +1,4 @@
-setwd("E:\\working\\earing yield and beta")
+setwd("D:\\working\\earing yield and beta")
 options(java.parameters="-Xmx4g")
 library(RSQLServer)
 library(dplyr)
@@ -11,13 +11,13 @@ library(rCharts)
 
 #######################################################################################################
 # source("D:\\working\\R\\GetData.R")
-load("E:/working/earing yield and beta/data.RData")
+load("D:/working/data.RData")
 #######################################################################################################
 # 确定参数
 startdate <- as.Date("2006-12-31")
 enddate <- as.Date("2015-3-31")
 nInterval <- 12 # 回归窗口长度
-nIndexCode <- 4982 # 确认市场指数， 全流通 4088，中证500 4978， 中证800 4982， 沪深300 3145
+nIndexCode <- 4088  # 确认市场指数， 全流通 4088，中证500 4978， 中证800 4982， 沪深300 3145
 
 #######################################################################################################
 # 计算回归窗口，收益率区间
@@ -44,7 +44,6 @@ freerate <- read.csv('Yield.csv', header = TRUE, sep = ",") %>%
 
 #########################################################################################
 #  计算市场收益率  全市场指数可以使用中证流通指数
-
 returns <- list()
 returns$Industry <- data$ReturnDaily %>%
   semi_join(data$TradingDay, by = c("DataDate" = "TradingDate")) %>%
@@ -60,7 +59,7 @@ returns$Industry <- data$ReturnDaily %>%
 #   left_join(data$IndexComponent %>% filter(IndexInnerCode == nIndexCode) %>% select(-IndexInnerCode),
 #             by = c("InnerCode" = "SecuInnerCode")) %>% # 这里选择指数成分股
 #   filter(TradingDay >= InDate & TradingDay < OutDate) %>%
-  group_by(TradingDay, SecondIndustryCode, SecondIndustryName) %>% # 以后可以从这里调成二级行业
+  group_by(TradingDay, FirstIndustryCode, FirstIndustryName) %>% # 以后可以从这里调成二级行业
   summarise(Return =  weighted.mean(DailyReturn, FloatMarkerCapLag1, na.rm = TRUE),
             Count = n()) %>%
   ungroup() %>%
@@ -68,35 +67,45 @@ returns$Industry <- data$ReturnDaily %>%
   mutate(AbnormalReturn = Return - Daily) %>%
   select(-Daily) 
 
-returns$IndustryMonthly <- data.frame()
+returns$IndustryMonthly <- data.frame() 
 for(i in c(1:nrow(return.interval.monthly))){
   temp.return <- returns$Industry %>%
     filter(TradingDay > return.interval.monthly$Startdate[i] & TradingDay <= return.interval.monthly$Enddate[i]) %>%
     mutate(Startdate = return.interval.monthly$Startdate[i],
            Enddate = return.interval.monthly$Enddate[i]) %>%
-    group_by(SecondIndustryCode, SecondIndustryName, Startdate, Enddate) %>%
+    group_by(FirstIndustryCode, FirstIndustryName, Startdate, Enddate) %>%
     summarise(Return = exp(sum(log1p(Return))) - 1, Count = mean(Count)) %>%
     ungroup()
   returns$IndustryMonthly <- rbind(returns$IndustryMonthly, temp.return)
 } 
 
+summary_industry_return <- returns$IndustryMonthly %>%
+  group_by(FirstIndustryName) %>%
+  summarise(Mean = mean(Return), Median = median(Return), 
+            Max = max(Return), Min = min(Return),
+            Count = mean(Count)) %>%
+  arrange(Mean)
+
+write.csv(summary_industry_return, "aa.csv")
+
+
 p1 <- returns$IndustryMonthly  %>%
-  group_by(SecondIndustryCode, SecondIndustryName) %>%
+  group_by(FirstIndustryCode, FirstIndustryName) %>%
   mutate(CumulateReturn = exp(cumsum(log1p(Return))) - 1, 
          Date = as.numeric(as.POSIXct(Startdate))*1000) %>%
   arrange(Startdate) %>%
   ungroup() 
-x1 <- hPlot(x = "Date", y = "CumulateReturn", data = p1 , type = "line", group = "SecondIndustryName")
+x1 <- hPlot(x = "Date", y = "CumulateReturn", data = p1 , type = "line", group = "FirstIndustryName")
 x1$xAxis(type = 'datetime', labels = list(format = '{value:%Y-%M-%d}' ))
 x1
 
 p2 <- returns$IndustryMonthly  %>%
   filter(Enddate > as.Date("2007-12-31")) %>%
   mutate(Year = format(Enddate, "%Y")) %>%
-  group_by(Year, SecondIndustryCode, SecondIndustryName) %>%
+  group_by(Year, FirstIndustryCode, FirstIndustryName) %>%
   summarise(YearReturn = exp(sum(log1p(Return))) - 1) %>%
   ungroup()
-x2 <- nPlot(x = "Year", y = "YearReturn", data = p2, type = "multiBarChart", group = "SecondIndustryName",
+x2 <- nPlot(x = "Year", y = "YearReturn", data = p2, type = "multiBarChart", group = "FirstIndustryName",
             width = 2000, height = 1000)
 x2
 
@@ -108,10 +117,15 @@ returns$Index <- data$IndexQuote %>%
   select(-Daily) %>%
   arrange(TradingDay)
 
+
 ################################################################################################
-#  计算beta
+#  计算beta   
 Beta <- function(x, y1, y2, y3, y4, y5, y6){
   beta = sum(coef(lm(x ~ y1 + y2 + y3 + y4 + y5 + y6))[2:7]) * 0.5 + 0.5
+}
+
+Beta <- function(x, y){
+  beta = coef(lm(x ~ y))[2]) 
 }
 
 low.beta <- data.frame()
@@ -121,18 +135,18 @@ high.beta.return <- data.frame()
 low.beta.return <- data.frame()
 industry.ep <- data.frame()
 corr <- data.frame()
-kIndustryNumber <- 20
+kIndustryNumber <- 5
 
 for(i in c(2:nrow(regression.time.monthly))){
   temp.industry <- returns$Industry %>%
     filter(TradingDay > return.interval.monthly$Startdate[i] & TradingDay <=  return.interval.monthly$Enddate[i]) %>%
-    group_by(SecondIndustryCode, SecondIndustryName) %>%
+    group_by(FirstIndustryCode, FirstIndustryName) %>%
     summarise(Return = exp(sum(log1p(Return))) - 1) %>%
     ungroup()
   
   temp.beta  <- returns$Industry %>%
     filter(TradingDay > regression.time.monthly$Startdate[i] & TradingDay <= regression.time.monthly$Enddate[i]) %>%
-    group_by(SecondIndustryCode) %>%
+    group_by(FirstIndustryCode) %>%
     filter(n() >= 205) %>%
     arrange(TradingDay) %>%
     mutate(lag1 = lag(AbnormalReturn, 1), lag2 = lag(AbnormalReturn, 2),
@@ -141,7 +155,7 @@ for(i in c(2:nrow(regression.time.monthly))){
     slice(-c(1:4)) %>%
     left_join(returns$Index %>% select(TradingDay, AbnormalReturn), by = c("TradingDay" = "TradingDay")) %>%
     mutate(RegressionTime = regression.time.monthly$Enddate[i]) %>%
-    group_by(RegressionTime, SecondIndustryCode, SecondIndustryName) %>%
+    group_by(RegressionTime, FirstIndustryCode, FirstIndustryName) %>%
     summarise(Beta = Beta(AbnormalReturn.x, AbnormalReturn.y, lag1, lag2, lag3, lag4, lag5)) %>%
     ungroup() 
   
@@ -154,13 +168,13 @@ for(i in c(2:nrow(regression.time.monthly))){
     slice(c(1:kIndustryNumber))
   
   temp.high.beta.return <- temp.high.beta %>%
-    left_join(temp.industry, by = c("SecondIndustryCode", "SecondIndustryName")) %>%
+    left_join(temp.industry, by = c("FirstIndustryCode", "FirstIndustryName")) %>%
     group_by(RegressionTime) %>%
     summarise(Return = sum(Return/Beta/n())) %>%
     ungroup()
   
   temp.low.beta.return <- temp.low.beta %>%
-    left_join(temp.industry, by = c("SecondIndustryCode", "SecondIndustryName")) %>%
+    left_join(temp.industry, by = c("FirstIndustryCode", "FirstIndustryName")) %>%
     group_by(RegressionTime) %>%
     summarise(Return = sum(Return/Beta/n()))%>%
     ungroup()  
@@ -178,18 +192,18 @@ for(i in c(2:nrow(regression.time.monthly))){
 #     filter(TradingDay >= InDate & TradingDay < OutDate) %>%
     left_join(data$SecuMainStock %>% select(InnerCode, CompanyCode), by = "InnerCode") %>%
     left_join(data$ExgIndustry %>% filter(Standard == 9), by = "CompanyCode") %>%
-    select(SecuCode, TradingDay, ClosePrice, FloatMarketCap, TotalShares, SecondIndustryCode, SecondIndustryName) %>%
+    select(SecuCode, TradingDay, ClosePrice, FloatMarketCap, TotalShares, FirstIndustryCode, FirstIndustryName) %>%
     left_join(data$NetProfit %>% filter(DataDate == regression.time.monthly$Enddate[i]), by = c("SecuCode" = "SecuCode", "TradingDay" = "DataDate")) %>%
     select(-EndDate) %>%
     filter(!is.na(NetProfit)) %>%
     mutate(EP = NPParentCompanyOwners/TotalShares/ClosePrice) %>%
-    group_by(TradingDay, SecondIndustryCode, SecondIndustryName) %>%
+    group_by(TradingDay, FirstIndustryCode, FirstIndustryName) %>%
     summarise(EP = weighted.mean(EP, FloatMarketCap, na.rm = TRUE)) %>%
     ungroup() %>%
-    semi_join(temp.industry, by = "SecondIndustryName")
+    semi_join(temp.industry, by = "FirstIndustryName")
   
   temp.corr <- temp.industry.ep %>%
-    inner_join(temp.beta, by = c("TradingDay" = "RegressionTime", "SecondIndustryCode", "SecondIndustryName")) %>%
+    inner_join(temp.beta, by = c("TradingDay" = "RegressionTime", "FirstIndustryCode", "FirstIndustryName")) %>%
     group_by(TradingDay) %>%
     summarise(Corr = cor(EP, Beta)) %>%
     ungroup()
@@ -211,11 +225,11 @@ x3
 p4 <- beta %>%
   filter(RegressionTime > as.Date("2006-12-31")) %>%
   mutate(Year = format(RegressionTime, "%Y")) %>%
-  group_by(Year, SecondIndustryName) %>%
+  group_by(Year, FirstIndustryName) %>%
   summarise(Beta = mean(Beta)) %>%
   ungroup() %>%
   arrange(Year, Beta)
-x4 <- nPlot(x = "Year", y = "Beta", data = p4, type = "multiBarChart", group = "SecondIndustryName",
+x4 <- nPlot(x = "Year", y = "Beta", data = p4, type = "multiBarChart", group = "FirstIndustryName",
             width = 2000, height = 1000)
 x4$chart(forceY = c(0.6, 1.2))
 x4
@@ -256,7 +270,7 @@ for(i in c(1:nrow(corr.use))){
     mutate(Order = ifelse(row_number(Beta*Score/abs(Score)) %in% c(1:kIndustryNumber), "Second", 
                           ifelse(row_number(-Beta*Score/abs(Score)) %in% c(1:kIndustryNumber), "First", "Mid"))) %>%
     filter(Order == "First"| Order == "Second") %>%
-    left_join(returns$IndustryMonthly, by = c("RegressionTime" = "Startdate", "SecondIndustryCode" = "SecondIndustryCode")) %>%
+    left_join(returns$IndustryMonthly, by = c("RegressionTime" = "Startdate", "FirstIndustryCode" = "FirstIndustryCode")) %>%
     mutate(Weight = ifelse(Order == 'First',Beta, 1/Beta)) %>%
     group_by(RegressionTime, Enddate, Order) %>%
     summarise(Return = weighted.mean(Return, Weight)) %>%
